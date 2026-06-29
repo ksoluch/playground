@@ -1,8 +1,7 @@
 use std::{
     collections::HashMap,
     error::Error,
-    fs::read,
-    io::{self, Read},
+    io::{self, Read, Write},
     net::SocketAddr,
 };
 
@@ -16,7 +15,7 @@ struct Connection {
     stream: TcpStream,
     socket: SocketAddr,
     input: [u8; 1024],
-    output: [u8; 1024],
+    read: usize,
 }
 
 impl Connection {
@@ -25,7 +24,7 @@ impl Connection {
             stream: params.0,
             socket: params.1,
             input: [0; 1024],
-            output: [0; 1024],
+            read: usize::default(),
         }
     }
 }
@@ -51,7 +50,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let mut connections = HashMap::<Token, Connection>::new();
 
-    'main: loop {
+    loop {
         poll.poll(&mut events, None)?;
         for event in events.iter() {
             let mut disconnect = false;
@@ -68,47 +67,60 @@ fn run() -> Result<(), Box<dyn Error>> {
                     connections.insert(next(token), connection);
                 }
                 session_token => {
-                    let Some(connection) = connections.get_mut(&session_token) else {
-                        error!("failed to find connection for token {}", session_token.0);
-                        continue;
-                    };
                     if event.is_read_closed() {
+                        let Some(connection) = connections.get_mut(&session_token) else {
+                            error!("failed to find connection for token {}", session_token.0);
+                            continue;
+                        };
                         trace!("is_read_closed: {} {}", session_token.0, connection.socket);
                         connections.remove(&session_token);
                         continue;
                     }
                     if event.is_write_closed() {
+                        let Some(connection) = connections.get_mut(&session_token) else {
+                            error!("failed to find connection for token {}", session_token.0);
+                            continue;
+                        };
                         trace!("is_write_closed: {} {}", session_token.0, connection.socket);
                         connections.remove(&session_token);
                         continue;
                     }
                     if event.is_readable() {
+                        let Some(connection) = connections.get_mut(&session_token) else {
+                            error!("failed to find connection for token {}", session_token.0);
+                            continue;
+                        };
                         trace!("is_readable: {} {}", session_token.0, connection.socket);
                         match read_all(&mut connection.stream, &mut connection.input) {
-                            Ok(0) => {
-                                if let Some(mut connection) = connections.remove(&session_token) {
-                                    poll.registry().deregister(&mut connection.stream);
-                                }
-                            },
-                            Ok(read) => {},
-                            Err(_) => {},
+                            Ok(n) => {
+                                trace!("read {} bytes", n);
+                            }
+                            Err(_) => {
+                                disconnect = true;
+                            }
                         }
                     }
                     if event.is_writable() {
+                        let Some(connection) = connections.get_mut(&session_token) else {
+                            error!("failed to find connection for token {}", session_token.0);
+                            continue;
+                        };
                         trace!("is_writable: {} {}", session_token.0, connection.socket);
-                        // write data
+                        let message = String::from_utf8_lossy(&connection.input[..connection.read]).to_string().to_uppercase();
+                        connection.read = 0;
+                        trace!("write_all: {}", message);
+                        let _ = (&connection.stream).write_all(message.as_bytes());
                     }
                 }
             }
 
             if disconnect {
-                let Some(connection) = connections.get_mut(&session_token) else {
-                    error!("failed to find connection for token {}", session_token.0);
+                let Some(connection) = connections.get_mut(&event.token()) else {
+                    error!("failed to find connection for token {}", event.token().0);
                     continue;
                 };
-                poll.registry().deregister(&mut connection.stream);
+                let _ = poll.registry().deregister(&mut connection.stream);
             }
-
         }
     }
 }

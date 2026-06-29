@@ -1,6 +1,12 @@
-use std::{collections::HashMap, error::Error, net::SocketAddr};
+use std::{
+    collections::HashMap,
+    error::Error,
+    fs::read,
+    io::{self, Read},
+    net::SocketAddr,
+};
 
-use log::{trace, error};
+use log::{error, trace};
 use mio::{
     Events, Interest, Poll, Token,
     net::{TcpListener, TcpStream},
@@ -48,6 +54,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     'main: loop {
         poll.poll(&mut events, None)?;
         for event in events.iter() {
+            let mut disconnect = false;
             match event.token() {
                 SERVER => {
                     let mut connection = Connection::new(server.accept()?);
@@ -61,23 +68,68 @@ fn run() -> Result<(), Box<dyn Error>> {
                     connections.insert(next(token), connection);
                 }
                 session_token => {
-                   let Some(connection) = connections.get_mut(&session_token) else {
-                       error!("failed to find connection for token {}", session_token.0);
-                       continue;
-                   };
-                   if event.is_read_closed() || event.is_write_closed() {
-                       connections.remove(&session_token);
-                       continue;
-                   }
-                   if event.is_readable() {
-                       // read data
-                   }
-                   if event.is_writable() {
-                       // write data
-                   }
-                },
+                    let Some(connection) = connections.get_mut(&session_token) else {
+                        error!("failed to find connection for token {}", session_token.0);
+                        continue;
+                    };
+                    if event.is_read_closed() {
+                        trace!("is_read_closed: {} {}", session_token.0, connection.socket);
+                        connections.remove(&session_token);
+                        continue;
+                    }
+                    if event.is_write_closed() {
+                        trace!("is_write_closed: {} {}", session_token.0, connection.socket);
+                        connections.remove(&session_token);
+                        continue;
+                    }
+                    if event.is_readable() {
+                        trace!("is_readable: {} {}", session_token.0, connection.socket);
+                        match read_all(&mut connection.stream, &mut connection.input) {
+                            Ok(0) => {
+                                if let Some(mut connection) = connections.remove(&session_token) {
+                                    poll.registry().deregister(&mut connection.stream);
+                                }
+                            },
+                            Ok(read) => {},
+                            Err(_) => {},
+                        }
+                    }
+                    if event.is_writable() {
+                        trace!("is_writable: {} {}", session_token.0, connection.socket);
+                        // write data
+                    }
+                }
             }
+
+            if disconnect {
+                let Some(connection) = connections.get_mut(&session_token) else {
+                    error!("failed to find connection for token {}", session_token.0);
+                    continue;
+                };
+                poll.registry().deregister(&mut connection.stream);
+            }
+
         }
+    }
+}
+
+fn read_all(stream: &mut TcpStream, buf: &mut [u8]) -> io::Result<usize> {
+    let mut index = 0;
+    loop {
+        match stream.read(&mut buf[index..]) {
+            Ok(0) => {
+                return Ok(0);
+            }
+            Ok(n) => {
+                index += n;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                return Ok(index);
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        };
     }
 }
 

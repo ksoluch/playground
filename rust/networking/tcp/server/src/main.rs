@@ -29,15 +29,14 @@ impl Connection {
     }
 }
 
-fn next(mut token: Token) -> Token {
-    let index = token.0;
-    token.0 = index + 1;
+fn next(token: Token) -> Token {
+    let index = token.0 + 1;
     Token(index)
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
     const SERVER: Token = Token(0);
-    let token = next(SERVER);
+    let mut token = next(SERVER);
 
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(64);
@@ -57,14 +56,14 @@ fn run() -> Result<(), Box<dyn Error>> {
             match event.token() {
                 SERVER => {
                     let mut connection = Connection::new(server.accept()?);
-                    let session_token = next(token);
                     poll.registry().register(
                         &mut connection.stream,
-                        session_token,
+                        token,
                         Interest::READABLE.add(Interest::WRITABLE),
                     )?;
-                    trace!("new connection: {} {}", session_token.0, connection.socket);
-                    connections.insert(next(token), connection);
+                    trace!("new connection: {} {}", token.0, connection.socket);
+                    connections.insert(token, connection);
+                    token = next(token);
                 }
                 session_token => {
                     if event.is_read_closed() {
@@ -105,11 +104,18 @@ fn run() -> Result<(), Box<dyn Error>> {
                             error!("failed to find connection for token {}", session_token.0);
                             continue;
                         };
-                        trace!("is_writable: {} {}", session_token.0, connection.socket);
-                        let message = String::from_utf8_lossy(&connection.input[..connection.read]).to_string().to_uppercase();
-                        connection.read = 0;
-                        trace!("write_all: {}", message);
-                        let _ = (&connection.stream).write_all(message.as_bytes());
+                        trace!(
+                            "is_writable: {} {} {}",
+                            session_token.0, connection.socket, connection.read
+                        );
+                        if connection.read > 0 {
+                            let message =
+                                String::from_utf8_lossy(&connection.input[..connection.read])
+                                    .to_string()
+                                    .to_uppercase();
+                            connection.read = 0;
+                            let _ = (&connection.stream).write_all(message.as_bytes());
+                        }
                     }
                 }
             }
@@ -149,6 +155,6 @@ fn main() {
     env_logger::init();
     match run() {
         Ok(_) => {}
-        Err(e) => trace!("failed {}", e),
+        Err(e) => trace!("ERROR: {}", e),
     }
 }

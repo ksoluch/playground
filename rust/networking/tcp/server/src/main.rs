@@ -1,9 +1,14 @@
 use std::{
-    collections::HashMap,
-    error::Error,
-    io::{self, Read, Write},
-    net::SocketAddr,
+    collections::HashMap, io::{self, Read, Write}, net::{AddrParseError, SocketAddr}
 };
+
+#[derive(thiserror::Error, Debug)]
+enum ServerError {
+    #[error("IO error: {source}")]
+    IO { #[from] source: std::io::Error, },
+    #[error("IP address parsing error: {source}")]
+    IpAddress { #[from] source: AddrParseError, },
+}
 
 use log::{error, trace};
 use mio::{
@@ -34,14 +39,14 @@ fn next(token: Token) -> Token {
     Token(index)
 }
 
-fn run() -> Result<(), Box<dyn Error>> {
+fn run() -> Result<(), ServerError> {
     const SERVER: Token = Token(0);
     let mut token = next(SERVER);
 
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(64);
 
-    let addr = "127.0.0.1:8080".parse()?;
+    let addr = "127.0.0.1:8080a".parse()?;
     let mut server = TcpListener::bind(addr)?;
 
     poll.registry()
@@ -153,8 +158,11 @@ fn read_all(stream: &mut TcpStream, buf: &mut [u8]) -> io::Result<usize> {
 
 fn main() {
     env_logger::init();
-    match run() {
-        Ok(_) => {}
-        Err(e) => trace!("ERROR: {}", e),
+    if let Err(error) = run() {
+        // println!("{}", error);
+        match error {
+            ServerError::IO { source } => println!("{}", source),
+            ServerError::IpAddress { source } => println!("{}", source),
+        }
     }
 }

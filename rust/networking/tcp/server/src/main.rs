@@ -21,6 +21,7 @@ struct Connection {
     socket: SocketAddr,
     input: [u8; 1024],
     read: usize,
+    ready_to_write: bool,
 }
 
 impl Connection {
@@ -30,6 +31,7 @@ impl Connection {
             socket: params.1,
             input: [0; 1024],
             read: usize::default(),
+            ready_to_write: false,
         }
     }
 }
@@ -46,7 +48,7 @@ fn run() -> Result<(), ServerError> {
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(64);
 
-    let addr = "127.0.0.1:8080a".parse()?;
+    let addr = "127.0.0.1:8080".parse()?;
     let mut server = TcpListener::bind(addr)?;
 
     poll.registry()
@@ -97,10 +99,22 @@ fn run() -> Result<(), ServerError> {
                         trace!("is_readable: {} {}", session_token.0, connection.socket);
                         match read_all(&mut connection.stream, &mut connection.input) {
                             Ok(n) => {
-                                trace!("read {} bytes", n);
+                                connection.read = n;
                             }
                             Err(_) => {
                                 disconnect = true;
+                            }
+                        }
+                        if connection.ready_to_write {
+                            if connection.read > 0 {
+                                let message =
+                                    String::from_utf8_lossy(&connection.input[..connection.read])
+                                    .to_string()
+                                    .to_uppercase();
+                                if let Ok(_) = (&connection.stream).write_all(message.as_bytes()) {
+                                    connection.read = 0;
+                                    connection.ready_to_write = false;
+                                }
                             }
                         }
                     }
@@ -109,6 +123,7 @@ fn run() -> Result<(), ServerError> {
                             error!("failed to find connection for token {}", session_token.0);
                             continue;
                         };
+                        connection.ready_to_write = true;
                         trace!(
                             "is_writable: {} {} {}",
                             session_token.0, connection.socket, connection.read
@@ -118,8 +133,10 @@ fn run() -> Result<(), ServerError> {
                                 String::from_utf8_lossy(&connection.input[..connection.read])
                                     .to_string()
                                     .to_uppercase();
-                            connection.read = 0;
-                            let _ = (&connection.stream).write_all(message.as_bytes());
+                            if let Ok(_) = (&connection.stream).write_all(message.as_bytes()) {
+                                connection.read = 0;
+                                connection.ready_to_write = false;
+                            }
                         }
                     }
                 }
@@ -159,7 +176,6 @@ fn read_all(stream: &mut TcpStream, buf: &mut [u8]) -> io::Result<usize> {
 fn main() {
     env_logger::init();
     if let Err(error) = run() {
-        // println!("{}", error);
         match error {
             ServerError::IO { source } => println!("{}", source),
             ServerError::IpAddress { source } => println!("{}", source),
